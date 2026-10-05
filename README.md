@@ -28,6 +28,7 @@ Antes de tocar el código, debes tener instalado **exactamente** esto en tu orde
 4.  **Extensiones de VS Code obligatorias:**
     *   *GitLens:* Para ver quién hizo cada cambio y gestionar Git visualmente.
     *   *PHP Intelephense:* Para autocompletado de código.
+    *   *Live Share:* Para trabajar conjuntamente en tiempo real (como un Google doc compartido).
 
 ---
 
