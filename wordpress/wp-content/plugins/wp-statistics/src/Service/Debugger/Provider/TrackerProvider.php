@@ -1,0 +1,365 @@
+<?php
+
+namespace WP_Statistics\Service\Debugger\Provider;
+
+use WP_Statistics\Components\Assets;
+use WP_Statistics\Components\AssetNameObfuscator;
+use WP_Statistics\Components\RemoteRequest;
+use WP_STATISTICS\Helper;
+use WP_STATISTICS\Option;
+use WP_Statistics\Service\Debugger\AbstractDebuggerProvider;
+
+/**
+ * Provider for handling tracker file status and cache information
+ *
+ * This class implements DebuggerServiceProviderInterface to provide information
+ * about the WP Statistics tracker file and caching status. It checks for the
+ * existence and accessibility of the tracker file and cache plugin status.
+ */
+class TrackerProvider extends AbstractDebuggerProvider
+{
+    /**
+     * Path to the tracker JavaScript file
+     * Stores the complete URL to the tracker.js file
+     *
+     * @var string
+     */
+    private $trackerPath;
+
+    /**
+     * Stores tracker status information
+     * Contains file existence, path, and cache status
+     *
+     * @var array
+     */
+    private $trackerStatus;
+
+    /**
+     * Arguments array for making remote requests.
+     * Contains configuration options and parameters used when performing requests.
+     *
+     * @var array Configuration arguments for remote requests
+     */
+    private $args = [];
+
+    /**
+     * Initialize tracker provider with necessary setup
+     */
+    public function __construct()
+    {
+        $this->args = [
+            'sslverify' => apply_filters('https_local_ssl_verify', false),
+        ];
+
+        $this->trackerPath = Assets::getSrc('js/tracker.js', Option::get('bypass_ad_blockers'), WP_STATISTICS_URL);
+        $this->initializeData();
+    }
+
+    /**
+     * Check if AJAX hit recording is blocked.
+     *
+     * @return bool
+     */
+    public function checkHitRecording()
+    {
+        $adBlocker = Option::get('bypass_ad_blockers', false);
+
+        return $adBlocker ? $this->checkAjaxHit() : $this->checkRestHit();
+    }
+
+    /**
+     * Check AJAX endpoint for hit recording
+     *
+     * @return bool Returns true if request works, false if blocked or invalid
+     */
+    private function checkAjaxHit()
+    {
+        $ajax_url      = admin_url('admin-ajax.php');
+        $remoteRequest = new RemoteRequest(
+            $ajax_url,
+            'POST',
+            [
+                'action' => 'wp_statistics_hit_record'
+            ],
+            $this->args
+        );
+
+        $remoteRequest->execute(false, false);
+
+        $response     = $remoteRequest->getResponse();
+        $responseCode = $remoteRequest->getResponseCode();
+
+        if ($this->isCloudflareChallenge($response) && 403 === $responseCode) {
+            return true;
+        }
+
+        return $remoteRequest->isValidJsonResponse();
+    }
+
+    /**
+     * Check REST API endpoint for hit recording
+     *
+     * @return bool Returns true if request works, false if blocked or invalid
+     */
+    private function checkRestHit()
+    {
+        $rest_url      = site_url('index.php?rest_route=/wp-statistics/v2/hit');
+        $remoteRequest = new RemoteRequest(
+            $rest_url,
+            'POST',
+            [],
+            $this->args
+        );
+
+        $remoteRequest->execute(false, false);
+
+        $response     = $remoteRequest->getResponse();
+        $responseCode = $remoteRequest->getResponseCode();
+
+        if ($this->isCloudflareChallenge($response) && 403 === $responseCode) {
+            return true;
+        }
+
+        return $remoteRequest->isValidJsonResponse();
+    }
+
+    /**
+     * Determines if a response indicates a Cloudflare challenge page.
+     *
+     * @param mixed $response The response array containing headers
+     * @return bool True if response indicates a Cloudflare challenge, false otherwise
+     */
+    private function isCloudflareChallenge($response)
+    {
+        if (!isset($response['headers']) || !is_object($response['headers'])) {
+            return false;
+        }
+
+        $server = $response['headers']->offsetGet('server') ?? '';
+        if ($server !== 'cloudflare') {
+            return false;
+        }
+
+        $cfMitigated = $response['headers']->offsetGet('cf-mitigated') ?? '';
+
+        return $cfMitigated === 'challenge';
+    }
+
+    /**
+     * Get tracker status information
+     *
+     * @return array Array containing tracker existence, path and cache status
+     */
+    public function getTrackerStatus()
+    {
+        return $this->trackerStatus;
+    }
+
+    /**
+     * Initialize tracker status data
+     * Sets up the initial tracker status array with all required information
+     */
+    private function initializeData()
+    {
+        $fileExists = $this->executeTrackerCheck();
+
+        $this->trackerStatus = [
+            'exists'             => $fileExists,
+            'path'               => $this->trackerPath,
+            'frontendStatus'     => $this->checkFrontendTracker(),
+            'cacheStatus'        => $this->getCacheStatus(),
+            'hitRecordingStatus' => $this->checkHitRecording()
+        ];
+    }
+
+    /**
+     * Checks the tracker URL included in the public homepage response.
+     *
+     * @return array
+     */
+    private function checkFrontendTracker()
+    {
+        $status = [
+            'checked'      => false,
+            'found'        => false,
+            'url'          => '',
+            'responseCode' => null,
+            'isAccessible' => null,
+        ];
+
+        $response = wp_safe_remote_get(home_url('/'), array_merge($this->args, [
+            'redirection' => 3,
+        ]));
+
+        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+            return $status;
+        }
+
+        $status['checked'] = true;
+        $trackerUrl        = $this->extractFrontendTrackerUrl(wp_remote_retrieve_body($response));
+
+        if (empty($trackerUrl)) {
+            if (!Option::get('use_cache_plugin')) {
+                $status['isAccessible'] = true;
+            }
+
+            return $status;
+        }
+
+        $status['found'] = true;
+        $status['url']   = $trackerUrl;
+
+        $trackerResponse = wp_safe_remote_get($trackerUrl, array_merge($this->args, [
+            'redirection'         => 3,
+            'limit_response_size' => 1024,
+        ]));
+
+        if (is_wp_error($trackerResponse)) {
+            return $status;
+        }
+
+        $status['responseCode'] = wp_remote_retrieve_response_code($trackerResponse);
+        $status['isAccessible'] = $status['responseCode'] === 200;
+
+        return $status;
+    }
+
+    /**
+     * Extracts the WP Statistics tracker URL from frontend HTML.
+     *
+     * @param string $html
+     * @return string
+     */
+    private function extractFrontendTrackerUrl($html)
+    {
+        if (empty($html) || !class_exists('WP_HTML_Tag_Processor')) {
+            return '';
+        }
+
+        $processor            = new \WP_HTML_Tag_Processor($html);
+        $assetNameObfuscator  = new AssetNameObfuscator();
+        $dynamicAssetKey      = $assetNameObfuscator->getDynamicAssetKey();
+
+        while ($processor->next_tag(['tag_name' => 'SCRIPT'])) {
+            $id  = $processor->get_attribute('id');
+            $src = $processor->get_attribute('src');
+
+            if (!is_string($src) || empty($src)) {
+                continue;
+            }
+
+            $isTrackerHandle = $id === 'wp-statistics-tracker-js';
+            $isTrackerPath   = strpos($src, '/wp-statistics/assets/js/tracker.js') !== false;
+            $isObfuscated    = strpos($src, '?' . $dynamicAssetKey . '=') !== false || strpos($src, '&' . $dynamicAssetKey . '=') !== false;
+
+            if (!$isTrackerHandle && !$isTrackerPath && !$isObfuscated) {
+                continue;
+            }
+
+            return $this->resolveFrontendTrackerUrl($src);
+        }
+
+        return '';
+    }
+
+    /**
+     * Resolves a frontend script source to an absolute URL.
+     *
+     * @param string $src
+     * @return string
+     */
+    private function resolveFrontendTrackerUrl($src)
+    {
+        $homeUrl = home_url('/');
+
+        if (strpos($src, '//') === 0) {
+            $scheme = wp_parse_url($homeUrl, PHP_URL_SCHEME);
+            $src    = $scheme . ':' . $src;
+        } elseif (strpos($src, '/') === 0) {
+            $parts = wp_parse_url($homeUrl);
+
+            if (empty($parts['scheme']) || empty($parts['host'])) {
+                return '';
+            }
+
+            $host = $parts['host'];
+            if (strpos($host, ':') !== false && strpos($host, '[') !== 0) {
+                $host = '[' . $host . ']';
+            }
+
+            $port = isset($parts['port']) ? ':' . $parts['port'] : '';
+            $src  = $parts['scheme'] . '://' . $host . $port . $src;
+        } elseif (empty(wp_parse_url($src, PHP_URL_SCHEME))) {
+            $src = home_url('/' . ltrim($src, '/'));
+        }
+
+        return esc_url_raw($src);
+    }
+
+    /**
+     * Execute remote request to check tracker file
+     * Performs a HEAD request to verify file accessibility
+     *
+     * @return bool Whether tracker file exists and is accessible
+     */
+    public function executeTrackerCheck()
+    {
+        $parsedUrl = wp_parse_url($this->trackerPath);
+
+        if (empty($parsedUrl['path'])) {
+            return false;
+        }
+
+        // If the file is dynamic (obfuscated query string), try remote HEAD check
+        if (!empty($parsedUrl['query'])) {
+            parse_str($parsedUrl['query'], $queryParams);
+
+            $assetNameObfuscator = new AssetNameObfuscator();
+            $dynamicAssetKey     = $assetNameObfuscator->getDynamicAssetKey();
+
+            if (isset($queryParams[$dynamicAssetKey])) {
+                $response = wp_safe_remote_head($this->trackerPath, ['sslverify' => false]);
+
+                return !is_wp_error($response) && wp_remote_retrieve_response_code($response) === 200;
+            }
+        }
+
+        // Normalize path by removing leading slash
+        $urlPath = ltrim($parsedUrl['path'], '/');
+
+        // Try matching with actual wp-content directory
+        $contentDirName  = basename(WP_CONTENT_DIR); // usually 'wp-content'
+        $contentPosition = strpos($urlPath, $contentDirName . '/');
+
+        if ($contentPosition === false) {
+            return false;
+        }
+
+        $relativeFilePath = substr($urlPath, $contentPosition + strlen($contentDirName . '/'));
+        $absoluteFilePath = WP_CONTENT_DIR . '/' . $relativeFilePath;
+
+        return file_exists($absoluteFilePath) && is_readable($absoluteFilePath);
+    }
+
+    /**
+     * Check if cache plugin is active
+     *
+     * @return bool True if cache plugin is enabled, false otherwise
+     */
+    public function getCacheStatus()
+    {
+        $cacheInfo = Helper::checkActiveCachePlugin();
+        return $cacheInfo['status'] ?? false;
+    }
+
+    /**
+     * Checks if a cache plugin is active and returns its name.
+     *
+     * @return string The active cache plugin name, or an empty string if none is active.
+     */
+    public function getCachePlugin()
+    {
+        $cacheInfo = Helper::checkActiveCachePlugin();
+        return $cacheInfo['plugin'] ?? '';
+    }
+}
