@@ -251,9 +251,7 @@ class Controller_Passkey {
 	}
 
 	public function any_passkeys_active() {
-		if (Controller_Settings::shared()->get_int(Controller_Settings::OPTION_SCHEMA_VERSION) < Controller_DB::PASSKEY_SCHEMA_VERSION) {
-			return false;
-		}
+		$this->require_schema();
 
 		return Controller_Users::shared()->any_passkey_active();
 	}

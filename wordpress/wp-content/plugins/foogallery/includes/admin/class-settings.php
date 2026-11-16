@@ -633,6 +633,15 @@ if ( ! class_exists( 'FooGallery_Admin_Settings' ) ) {
 				);
 			}
 
+			$settings[] = array(
+				'id'      => 'enable_trial_mode',
+				'title'   => __( 'Admin Trial Mode', 'foogallery' ),
+				'desc'    => __( 'Highlight gallery layouts and features available in other plans. This does not activate those features or start a trial.', 'foogallery' ),
+				'type'    => 'checkbox',
+				'tab'     => 'advanced',
+				'section' => __( 'WordPress Admin', 'foogallery' ),
+			);
+
 			//endregion Advanced Tab
 
 			//region Custom JS & CSS
@@ -740,6 +749,7 @@ if ( ! class_exists( 'FooGallery_Admin_Settings' ) ) {
 					'settings' => array(
 						'force_hide_trial',
 						'pro_promo_disabled',
+						'enable_trial_mode',
 						'demo_content',
 					),
 				),

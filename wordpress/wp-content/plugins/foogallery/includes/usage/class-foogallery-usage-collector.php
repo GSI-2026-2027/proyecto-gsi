@@ -762,8 +762,6 @@ class FooGallery_Usage_Collector {
 			'foogridpro'       => 'layout.grid',
 			'slider'           => 'layout.slider',
 			'spotlight'        => 'layout.spotlight',
-			'mosaic'           => 'layout.mosaic',
-			'wall'             => 'layout.wall',
 			'product'          => 'layout.product',
 		); }
 	/**

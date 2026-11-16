@@ -133,7 +133,7 @@ class Model_Request {
 					$sp = explode($char, $value);
 					$sp = array_reverse($sp);
 					foreach ($sp as $index => $j) {
-						$j = trim($j, " \t\n\r\0\x0B\x0C");
+						$j = trim($j);
 						if (!Model_IP::is_valid_ip($j)) {
 							$j = preg_replace('/:\d+$/', '', $j); //Strip off port
 						}

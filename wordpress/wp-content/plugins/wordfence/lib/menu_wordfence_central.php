@@ -149,10 +149,7 @@ else {
 				el.removeClass('running')
 				.addClass('complete-warning');
 				cbErr && cbErr(response);
-			}, noLoading, function() {
-				el.removeClass('running')
-				.addClass('complete-warning');
-			});
+			}, noLoading);
 		}
 
 		var WFCentralInstaller = {};

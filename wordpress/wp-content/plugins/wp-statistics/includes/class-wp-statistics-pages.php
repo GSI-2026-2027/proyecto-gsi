@@ -33,17 +33,12 @@ class Pages
             $current_page['id'] = $id;
         }
 
-        // Search term, if any. An empty search (?s=) does not count as a search.
-        $search_query = trim(sanitize_text_field(get_search_query(false)));
-
         //WooCommerce Product
         if (class_exists('WooCommerce')) {
             if (is_product()) {
                 return wp_parse_args(array("type" => "product"), $current_page);
             }
-            // A product search (/?post_type=product&s=...) is also the shop archive;
-            // leave it to the search check below so the search term is recorded.
-            if (is_shop() && $search_query === '') {
+            if (is_shop()) {
                 // Get Shop Page ID
                 $shopPageID = wc_get_page_id('shop');
 
@@ -106,7 +101,8 @@ class Pages
         }
 
         //is search page
-        if ($search_query !== '') {
+        $search_query = sanitize_text_field(get_search_query(false));
+        if (trim($search_query) != "") {
             return array("type" => "search", "id" => 0, "search_query" => $search_query);
         }
 

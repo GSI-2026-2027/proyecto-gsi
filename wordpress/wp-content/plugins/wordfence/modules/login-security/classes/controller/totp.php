@@ -76,13 +76,7 @@ class Controller_TOTP {
 			$code = strtolower(preg_replace('/\s/i', '', $code));
 			$recoveryCodes = str_split(strtolower(bin2hex($record['recovery'])), 16);
 			
-			$index = false;
-			foreach ($recoveryCodes as $recoveryIndex => $recoveryCode) {
-				if (hash_equals($recoveryCode, $code)) {
-					$index = $recoveryIndex;
-					break;
-				}
-			}
+			$index = array_search($code, $recoveryCodes);
 			if ($index !== false) {
 				if ($update) {
 					unset($recoveryCodes[$index]);

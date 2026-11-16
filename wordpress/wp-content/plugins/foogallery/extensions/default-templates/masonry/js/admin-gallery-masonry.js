@@ -18,7 +18,7 @@
 			FOOGALLERY_MASONRY_TEMPLATE.showHideControls();
 		});
 
-		$(document).on('change', 'input[name="foogallery_settings[masonry_layout]"]', function() {
+		$('input[name="foogallery_settings[masonry_layout]"]').change(function() {
 			FOOGALLERY_MASONRY_TEMPLATE.showHideControls();
 		});
 	};

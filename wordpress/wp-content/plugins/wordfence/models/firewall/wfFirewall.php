@@ -84,23 +84,18 @@ class wfFirewall
 	}
 	
 	/**
-	 * Tests whether the active WAF configuration can be read.
+	 * Tests the WAF configuration and returns true if successful.
 	 * 
 	 * @return bool
 	 */
 	public function testConfig() {
 		try {
-			if (!wfWAF::getInstance() || (class_exists('wfDummyWaf', false) && wfWAF::getInstance() instanceof wfDummyWaf)) {
-				return false;
-			}
 			wfWAF::getInstance()->getStorageEngine()->isDisabled();
 		}
 		catch (Exception $e) {
 			return false;
 		}
-		catch (Throwable $e) {
-			return false;
-		}
+		
 		return true;
 	}
 	
