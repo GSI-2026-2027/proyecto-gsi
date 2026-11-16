@@ -67,8 +67,7 @@ if (isset($hitData->fullRequest)) {
 		switch ($matches[1]) {
 			case 'body':
 				$request->setMethod('POST');
-				// Parse locally: an ancestor installation may have loaded an older WAF.
-				parse_str(str_replace("\0", '%00', "$matches[2]$matches[3]"), $body);
+				parse_str("$matches[2]$matches[3]", $body);
 				$request->setBody($body);
 				break;
 		}

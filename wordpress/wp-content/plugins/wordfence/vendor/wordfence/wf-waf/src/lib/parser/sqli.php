@@ -2,139 +2,6 @@
 if (defined('WFWAF_VERSION') && !defined('WFWAF_RUN_COMPLETE')) {
 
 require_once dirname(__FILE__) . '/lexer.php';
-require_once dirname(__FILE__) . '/sqli-scanner.php';
-
-/**
- * Shared limits for SQLi inspection within one request.
- */
-class wfWAFSQLiBudget {
-	const MAX_CHECKS = 16;
-	const MAX_VALUE_BYTES = 2097152;
-	const MAX_REQUEST_BYTES = 4194304;
-	const MAX_PREFILTER_BYTES = 8388608;
-	const MAX_VALUE_TOKENS = 8192;
-	const MAX_REQUEST_TOKENS = 32768;
-	// Five recursive entry points bound the grammar stack to at most 128 calls.
-	const MAX_PARSE_DEPTH = 22;
-
-	private $checks = 0;
-	private $bytes = 0;
-	private $prefilterBytes = 0;
-	private $valueTokens = 0;
-	private $tokens = 0;
-	private $depth = 0;
-	private $limit;
-
-	/**
-	 * Reserve a complete value before SQL contexts are constructed.
-	 * @param string $value Value requiring SQLi validation.
-	 * @return void
-	 * @throws wfWAFSQLiLimitException
-	 */
-	public function beginValue($value) {
-		$this->check('checks', $this->checks, self::MAX_CHECKS);
-		$length = strlen($value);
-		$this->check('value_bytes', 0, self::MAX_VALUE_BYTES, $length);
-		$this->check('request_bytes', $this->bytes, self::MAX_REQUEST_BYTES, $length);
-		$this->checks++;
-		$this->bytes += $length;
-		$this->valueTokens = 0;
-	}
-
-	/**
-	 * Charge the full value before a SQLi rule's preliminary regex scan.
-	 * @param string $value Value requiring the preliminary scan.
-	 * @return void
-	 * @throws wfWAFSQLiLimitException
-	 */
-	public function scanValue($value) {
-		$length = strlen($value);
-		$this->check('prefilter_bytes', $this->prefilterBytes, self::MAX_PREFILTER_BYTES, $length);
-		$this->prefilterBytes += $length;
-	}
-
-	/**
-	 * Charge a token lookup, including cached tokens and end-of-input.
-	 * @return void
-	 * @throws wfWAFSQLiLimitException
-	 */
-	public function consumeToken() {
-		$this->check('value_tokens', $this->valueTokens, self::MAX_VALUE_TOKENS);
-		$this->check('request_tokens', $this->tokens, self::MAX_REQUEST_TOKENS);
-		$this->valueTokens++;
-		$this->tokens++;
-	}
-
-	/**
-	 * Enter one recursive grammar boundary before executing its body.
-	 * @return void
-	 * @throws wfWAFSQLiLimitException
-	 */
-	public function enterParser() {
-		$this->check('parse_depth', $this->depth, self::MAX_PARSE_DEPTH);
-		$this->depth++;
-	}
-
-	/**
-	 * Release a recursive grammar boundary on return or exception.
-	 * @return void
-	 */
-	public function leaveParser() {
-		$this->depth--;
-	}
-
-	/**
-	 * Return the first exhausted limit, if any.
-	 * @return string|null
-	 */
-	public function getLimit() {
-		return $this->limit;
-	}
-
-	/**
-	 * Refuse work beyond a limit; exhaustion remains sticky for the request.
-	 * @param string $name Limit identifier.
-	 * @param int $used Work already performed.
-	 * @param int $maximum Inclusive boundary.
-	 * @param int $amount Work requested.
-	 * @return void
-	 * @throws wfWAFSQLiLimitException
-	 */
-	private function check($name, $used, $maximum, $amount = 1) {
-		if ($this->limit === null && $amount > $maximum - $used) {
-			$this->limit = $name;
-		}
-		if ($this->limit !== null) {
-			throw new wfWAFSQLiLimitException($this->limit);
-		}
-	}
-}
-
-/**
- * Inspection exhaustion is distinct from SQL syntax errors and attack detection.
- */
-class wfWAFSQLiLimitException extends wfWAFException {
-	private $limit;
-
-	/**
-	 * Describe the exhausted inspection limit.
-	 * @param string $limit Limit identifier.
-	 * @return void
-	 */
-	public function __construct($limit) {
-		$this->limit = $limit;
-		parent::__construct('SQLi inspection limit exceeded: ' . $limit);
-	}
-
-	/**
-	 * Return the exhausted limit identifier.
-	 * @return string
-	 */
-	public function getLimit() {
-		return $this->limit;
-	}
-}
-
 
 class wfWAFSQLiParser extends wfWAFBaseParser {
 
@@ -142,18 +9,9 @@ class wfWAFSQLiParser extends wfWAFBaseParser {
 
 	/**
 	 * @param string $param
-	 * @param wfWAFSQLiBudget|null $budget Shared request budget, or a new standalone budget.
-	 * @param string|null $lexerErrorPrefix Input preceding a lexer error, if one occurs.
-	 * @return bool|null
-	 * @throws wfWAFSQLiLimitException
+	 * @return bool
 	 */
-	public static function testForSQLi($param, $budget = null, &$lexerErrorPrefix = null) {
-		$lexerErrorPrefix = null;
-		$hadLexerError = false;
-		if ($budget === null) {
-			$budget = new wfWAFSQLiBudget();
-		}
-		$budget->beginValue($param);
+	public static function testForSQLi($param) {
 		static $instance;
 		static $tests;
 		if (!$instance) {
@@ -226,74 +84,27 @@ class wfWAFSQLiParser extends wfWAFBaseParser {
 				array('UPDATE t1 SET col1 = \'%s\' ', 5),
 			);
 		}
-		$previousBudget = $instance->inspectionBudget;
-		$instance->inspectionBudget = $budget;
-		$instance->sharedInspection = true;
-		try {
-			$lexerFlags = array(0);
-			if (strpos($param, '/*!') !== false) {
-				$lexerFlags[] = wfWAFSQLiLexer::FLAG_TOKENIZE_MYSQL_PORTABLE_COMMENTS;
-			}
-			foreach ($lexerFlags as $flags) {
-				foreach ($tests as $test) {
-	//				$startTime = microtime(true);
-					list($sql, $expectedTokenCount) = $test;
-					try {
-						$instance->setFlags($flags);
-						$instance->setSubject(sprintf($sql, $param));
-						if (($instance->hasMoreThanNumTokens($expectedTokenCount) && $instance->evaluate())
-							|| $instance->hasMultiplePortableCommentVersions()) {
-	//						printf("%s took %f seconds\n", $sql, microtime(true) - $startTime);
-							return true;
-						}
-	//					printf("%s took %f seconds\n", $sql, microtime(true) - $startTime);
+		$lexerFlags = array(0, wfWAFSQLiLexer::FLAG_TOKENIZE_MYSQL_PORTABLE_COMMENTS);
+		foreach ($lexerFlags as $flags) {
+			foreach ($tests as $test) {
+//				$startTime = microtime(true);
+				list($sql, $expectedTokenCount) = $test;
+				try {
+					$instance->setFlags($flags);
+					$instance->setSubject(sprintf($sql, $param));
+					if (($instance->hasMoreThanNumTokens($expectedTokenCount) && $instance->evaluate())
+						|| $instance->hasMultiplePortableCommentVersions()) {
+//						printf("%s took %f seconds\n", $sql, microtime(true) - $startTime);
+						return true;
 					}
-					catch (wfWAFSQLiLexerSyntaxError $e) {
-						$hadLexerError = true;
-						$paramStart = strpos($sql, '%s');
-						$offset = $e->getByteOffset() - $paramStart;
-						if ($paramStart !== false && $offset >= 0 && $offset <= wfWAFUtils::strlen($param)) {
-							$prefix = wfWAFUtils::substr($param, 0, $offset);
-							if ($lexerErrorPrefix === null || wfWAFUtils::strlen($prefix) > wfWAFUtils::strlen($lexerErrorPrefix)) {
-								$lexerErrorPrefix = $prefix;
-							}
-						}
-					}
-					catch (wfWAFParserSyntaxError $e) {
+//					printf("%s took %f seconds\n", $sql, microtime(true) - $startTime);
+				} catch (wfWAFParserSyntaxError $e) {
 
-					}
 				}
 			}
-			return $hadLexerError ? null : false;
 		}
-		finally {
-			$instance->inspectionBudget = $previousBudget;
-			$instance->sharedInspection = false;
-		}
+		return false;
 	}
-
-	/**
-	 * Remove ordinary SQL comments for one bounded retry after a lexer error.
-	 *
-	 * @param string $param SQL candidate.
-	 * @return string Candidate without ordinary comments.
-	 */
-	public static function stripOrdinaryComments($param) {
-		$stripped = preg_replace_callback(
-			'/(?:\'(?:\\\\.|[^\'\\\\])*\'|"(?:\\\\.|[^"\\\\])*"|`(?:``|[^`])*`)(*SKIP)(*F)|\/\*(?!!|M!)[\s\S]*?\*\/|#[^\n]*|--(?:\n|[\x00-\x09\x0b-\x20\x7f\xa0][^\n]*)/',
-			function ($match) {
-				$newlines = substr_count($match[0], "\n");
-				return $newlines ? str_repeat("\n", $newlines) : ' ';
-			},
-			$param
-		);
-		return $stripped === null ? $param : $stripped;
-	}
-
-	/** @var wfWAFSQLiBudget */
-	private $inspectionBudget;
-	/** @var bool */
-	private $sharedInspection = false;
 
 	private $subject;
 
@@ -1335,11 +1146,7 @@ class wfWAFSQLiParser extends wfWAFBaseParser {
 		try {
 			$this->parse();
 			return true;
-		}
-		catch (wfWAFSQLiLexerSyntaxError $e) {
-			throw $e;
-		}
-		catch (wfWAFParserSyntaxError $e) {
+		} catch (wfWAFParserSyntaxError $e) {
 			return false;
 		}
 	}
@@ -1367,7 +1174,6 @@ class wfWAFSQLiParser extends wfWAFBaseParser {
 	 * @return bool
 	 */
 	protected function getToken($index) {
-		$this->inspectionBudget->consumeToken();
 		if (array_key_exists($index, $this->tokens)) {
 			return $this->tokens[$index];
 		}
@@ -1376,7 +1182,6 @@ class wfWAFSQLiParser extends wfWAFBaseParser {
 				$this->tokens[$index] = $token;
 				return $this->tokens[$index];
 			}
-			$this->inspectionBudget->consumeToken();
 		}
 		return false;
 	}
@@ -1443,34 +1248,28 @@ class wfWAFSQLiParser extends wfWAFBaseParser {
 	}
 
 	private function parseSelectExpression() {
-		$this->inspectionBudget->enterParser();
-		try {
-			$savePoint = $this->index;
-			if ($this->isTokenOfType($this->nextToken(), wfWAFSQLiLexer::OPEN_PARENTHESIS) &&
-				$this->parseSelectExpression() &&
-				$this->isTokenOfType($this->nextToken(), wfWAFSQLiLexer::CLOSE_PARENTHESIS)
-			) {
-				return true;
-			}
-			$this->index = $savePoint;
-
-			if ($this->parseSelect()) {
-				if ($this->parseFrom()) {
-					$this->parseWhere();
-					$this->parseProcedure();
-					$this->parseGroupBy();
-					$this->parseHaving();
-				}
-				$this->parseOrderBy();
-				$this->parseLimit();
-
-				return true;
-			}
-			return false;
+		$savePoint = $this->index;
+		if ($this->isTokenOfType($this->nextToken(), wfWAFSQLiLexer::OPEN_PARENTHESIS) &&
+			$this->parseSelectExpression() &&
+			$this->isTokenOfType($this->nextToken(), wfWAFSQLiLexer::CLOSE_PARENTHESIS)
+		) {
+			return true;
 		}
-		finally {
-			$this->inspectionBudget->leaveParser();
+		$this->index = $savePoint;
+
+		if ($this->parseSelect()) {
+			if ($this->parseFrom()) {
+				$this->parseWhere();
+				$this->parseProcedure();
+				$this->parseGroupBy();
+				$this->parseHaving();
+			}
+			$this->parseOrderBy();
+			$this->parseLimit();
+
+			return true;
 		}
+		return false;
 	}
 
 	/**
@@ -1596,35 +1395,29 @@ class wfWAFSQLiParser extends wfWAFBaseParser {
 	}
 
 	private function parseExpression() {
-		$this->inspectionBudget->enterParser();
-		try {
-			// Combines these:
-			// exp_factor3 ( AND_SYM exp_factor3 )* ;
-			// expression:	exp_factor1 ( OR_SYM exp_factor1 )* ;
-			// exp_factor1:	exp_factor2 ( XOR exp_factor2 )* ;
-			// exp_factor2:	exp_factor3 ( AND_SYM exp_factor3 )* ;
+		// Combines these:
+		// exp_factor3 ( AND_SYM exp_factor3 )* ;
+		// expression:	exp_factor1 ( OR_SYM exp_factor1 )* ;
+		// exp_factor1:	exp_factor2 ( XOR exp_factor2 )* ;
+		// exp_factor2:	exp_factor3 ( AND_SYM exp_factor3 )* ;
 
-			$savePoint = $this->index;
-			$hasExpression = false;
-			while ($this->parseExpressionFactor3()) {
-				$hasExpression = true;
-				$savePoint2 = $this->index;
-				$token = $this->nextToken();
-				if ($this->isOrToken($token) || $this->isAndToken($token) || $this->isIdentifierWithValue($token, 'xor')) {
-					continue;
-				}
-				$this->index = $savePoint2;
-				break;
+		$savePoint = $this->index;
+		$hasExpression = false;
+		while ($this->parseExpressionFactor3()) {
+			$hasExpression = true;
+			$savePoint2 = $this->index;
+			$token = $this->nextToken();
+			if ($this->isOrToken($token) || $this->isAndToken($token) || $this->isIdentifierWithValue($token, 'xor')) {
+				continue;
 			}
-			if ($hasExpression) {
-				return true;
-			}
-			$this->index = $savePoint;
-			return false;
+			$this->index = $savePoint2;
+			break;
 		}
-		finally {
-			$this->inspectionBudget->leaveParser();
+		if ($hasExpression) {
+			return true;
 		}
+		$this->index = $savePoint;
+		return false;
 	}
 
 	private function parseExpressionFactor3() {
@@ -1732,128 +1525,116 @@ class wfWAFSQLiParser extends wfWAFBaseParser {
 	}
 
 	private function parsePredicate() {
-		$this->inspectionBudget->enterParser();
-		try {
-			$startIndex = $this->index;
-			if ($this->parseBitExpression()) {
-				$savePoint = $this->index;
-				$token = $this->nextToken();
-				if ($token) {
-					if ($hasNot = $this->isNotSymbolToken($token)) {
-						$token = $this->nextToken();
-						if (!$token) {
-							$this->index = $startIndex;
-							return false;
-						}
-					}
-					$val = $token->getLowerCaseValue();
-
-					if ($token->getType() === wfWAFSQLiLexer::UNQUOTED_IDENTIFIER) {
-						switch ($val) {
-							case 'in':
-								if ($this->parseSubquery() || $this->parseExpressionList()) {
-									return true;
-								}
-								break;
-
-							case 'between':
-								if ($this->parseBitExpression() && $this->isIdentifierWithValue($this->nextToken(), 'and') &&
-									$this->parsePredicate()
-								) {
-									return true;
-								}
-								break;
-
-							case 'sounds':
-								if ($this->isIdentifierWithValue($this->nextToken(), 'like') &&
-									$this->parseBitExpression()
-								) {
-									return true;
-								}
-								break;
-
-							case 'like':
-							case 'rlike':
-								if ($this->parseSimpleExpression()) {
-									// We've got a LIKE statement at this point
-									$savePoint = $this->index;
-									if ($this->isIdentifierWithValue($this->nextToken(), 'escape') &&
-										$this->parseSimpleExpression()
-									) {
-										return true;
-									}
-									$this->index = $savePoint;
-									return true;
-								}
-								break;
-
-							case 'regexp':
-								if ($this->parseBitExpression()) {
-									return true;
-								}
-								break;
-
-							default:
-								if ($hasNot) {
-									$this->index = $startIndex;
-									return false;
-								}
-								break;
-						}
+		$startIndex = $this->index;
+		if ($this->parseBitExpression()) {
+			$savePoint = $this->index;
+			$token = $this->nextToken();
+			if ($token) {
+				if ($hasNot = $this->isNotSymbolToken($token)) {
+					$token = $this->nextToken();
+					if (!$token) {
+						$this->index = $startIndex;
+						return false;
 					}
 				}
-				$this->index = $savePoint;
-				return true;
+				$val = $token->getLowerCaseValue();
+
+				if ($token->getType() === wfWAFSQLiLexer::UNQUOTED_IDENTIFIER) {
+					switch ($val) {
+						case 'in':
+							if ($this->parseSubquery() || $this->parseExpressionList()) {
+								return true;
+							}
+							break;
+
+						case 'between':
+							if ($this->parseBitExpression() && $this->isIdentifierWithValue($this->nextToken(), 'and') &&
+								$this->parsePredicate()
+							) {
+								return true;
+							}
+							break;
+
+						case 'sounds':
+							if ($this->isIdentifierWithValue($this->nextToken(), 'like') &&
+								$this->parseBitExpression()
+							) {
+								return true;
+							}
+							break;
+
+						case 'like':
+						case 'rlike':
+							if ($this->parseSimpleExpression()) {
+								// We've got a LIKE statement at this point
+								$savePoint = $this->index;
+								if ($this->isIdentifierWithValue($this->nextToken(), 'escape') &&
+									$this->parseSimpleExpression()
+								) {
+									return true;
+								}
+								$this->index = $savePoint;
+								return true;
+							}
+							break;
+
+						case 'regexp':
+							if ($this->parseBitExpression()) {
+								return true;
+							}
+							break;
+
+						default:
+							if ($hasNot) {
+								$this->index = $startIndex;
+								return false;
+							}
+							break;
+					}
+				}
 			}
-			$this->index = $startIndex;
-			return false;
+			$this->index = $savePoint;
+			return true;
 		}
-		finally {
-			$this->inspectionBudget->leaveParser();
-		}
+		$this->index = $startIndex;
+		return false;
 	}
 
 	/**
 	 * @return bool
 	 */
 	private function parseBitExpression() {
-		$this->inspectionBudget->enterParser();
-		try {
-			// factor1 ( VERTBAR factor1 )? ;
+		// factor1 ( VERTBAR factor1 )? ;
+		$savePoint = $this->index;
+		if ($this->parseBitExprFactor5()) {
 			$savePoint = $this->index;
-			if ($this->parseBitExprFactor5()) {
-				$savePoint = $this->index;
-				$token = $this->nextToken();
-				if (($this->isTokenOfType($token, array(
-							wfWAFSQLiLexer::BIT_OR,
-							wfWAFSQLiLexer::BIT_AND,
-							wfWAFSQLiLexer::BIT_XOR,
-							wfWAFSQLiLexer::BIT_LEFT_SHIFT,
-							wfWAFSQLiLexer::BIT_RIGHT_SHIFT,
-							wfWAFSQLiLexer::BIT_INVERSION,
-							wfWAFSQLiLexer::PLUS,
-							wfWAFSQLiLexer::MINUS,
-							wfWAFSQLiLexer::ASTERISK,
-							wfWAFSQLiLexer::DIVISION,
-							wfWAFSQLiLexer::MOD,
-						))
-						||
-						$this->isIdentifierWithValue($token, array(
-							'div', 'mod'
-						))) &&
-					$this->parseBitExpression()
-				) {
-					return true;
-				}
-				$this->index = $savePoint;
+			$token = $this->nextToken();
+			if (($this->isTokenOfType($token, array(
+						wfWAFSQLiLexer::BIT_OR,
+						wfWAFSQLiLexer::BIT_AND,
+						wfWAFSQLiLexer::BIT_XOR,
+						wfWAFSQLiLexer::BIT_LEFT_SHIFT,
+						wfWAFSQLiLexer::BIT_RIGHT_SHIFT,
+						wfWAFSQLiLexer::BIT_INVERSION,
+						wfWAFSQLiLexer::PLUS,
+						wfWAFSQLiLexer::MINUS,
+						wfWAFSQLiLexer::ASTERISK,
+						wfWAFSQLiLexer::DIVISION,
+						wfWAFSQLiLexer::MOD,
+					))
+					||
+					$this->isIdentifierWithValue($token, array(
+						'div', 'mod'
+					))) &&
+				$this->parseBitExpression()
+			) {
 				return true;
 			}
 			$this->index = $savePoint;
-			return false;
+			return true;
 		}
-		finally {
-			$this->inspectionBudget->leaveParser();
-		}
+		$this->index = $savePoint;
+		return false;
 	}
 
 
@@ -2584,25 +2365,19 @@ class wfWAFSQLiParser extends wfWAFBaseParser {
 	 * @return bool
 	 */
 	private function parseTableReference() {
-		$this->inspectionBudget->enterParser();
-		try {
-			$savePoint = $this->index;
-			$hasTables = false;
-			if ($this->parseTableFactor()) {
-				$hasTables = true;
-				while ($this->parseJoinTable()) {
+		$savePoint = $this->index;
+		$hasTables = false;
+		if ($this->parseTableFactor()) {
+			$hasTables = true;
+			while ($this->parseJoinTable()) {
 
-				}
 			}
-			if ($hasTables) {
-				return true;
-			}
-			$this->index = $savePoint;
-			return false;
 		}
-		finally {
-			$this->inspectionBudget->leaveParser();
+		if ($hasTables) {
+			return true;
 		}
+		$this->index = $savePoint;
+		return false;
 	}
 
 	/**
@@ -3632,10 +3407,6 @@ class wfWAFSQLiParser extends wfWAFBaseParser {
 	 * @param string $subject
 	 */
 	public function setSubject($subject) {
-		if (!$this->sharedInspection) {
-			$this->inspectionBudget = new wfWAFSQLiBudget();
-			$this->inspectionBudget->beginValue((string) $subject);
-		}
 		$this->subject = $subject;
 		$this->setTokens(array());
 		$this->lexer->setSQL($this->subject);
@@ -3731,11 +3502,11 @@ class wfWAFSQLiLexer implements wfWAFLexerInterface {
 				new wfWAFLexerTokenMatcher(self::QUOTED_IDENTIFIER, '/^`(?:[^`]*(?:``[^`]*)*)`/As'),
 				new wfWAFLexerTokenMatcher(self::DOUBLE_STRING_LITERAL, '/^(?:[nN]|_[0-9a-zA-Z\\$_]{0,256})?"([^"\\\\]*(?:\\\\.[^"\\\\]*)*)"/As'),
 				new wfWAFLexerTokenMatcher(self::SINGLE_STRING_LITERAL, '/^(?:[nN]|_[0-9a-zA-Z\\$_]{0,256})?\'([^\'\\\\]*(?:\\\\.[^\'\\\\]*)*)\'/As'),
-				// Match identifier bytes without requiring valid UTF-8 for the entire input.
-				new wfWAFLexerTokenMatcher(self::UNQUOTED_IDENTIFIER, '/^[0-9a-zA-Z\\$_\\x80-\\xff]{1,1024}/'),
+				// U+0080 .. U+FFFF
+				new wfWAFLexerTokenMatcher(self::UNQUOTED_IDENTIFIER, '/^[0-9a-zA-Z\\$_\\x{0080}-\\x{FFFF}]{1,256}/u'),
 				new wfWAFLexerTokenMatcher(self::MYSQL_PORTABLE_COMMENT_START, '/^\\/\\*\\![0-9]{0,5}/s'),
 				new wfWAFLexerTokenMatcher(self::MYSQL_PORTABLE_COMMENT_END, '/^\\*\\//s'),
-				new wfWAFLexerTokenMatcher(self::SINGLE_LINE_COMMENT, '/^(?:#[^\n]*|--(?:\n|[\x00-\x09\x0b-\x20\x7f\xa0][^\n]*))/'),
+				new wfWAFLexerTokenMatcher(self::SINGLE_LINE_COMMENT, '/^(?:#[^\n]*|--(?:[ \t\r][^\n]*|[\n]))/'),
 				new wfWAFLexerTokenMatcher(self::MULTI_LINE_COMMENT, '/^\\/\\*.*?\\*\\//s'),
 				new wfWAFLexerTokenMatcher(self::DOT, '/^\\./'),
 				new wfWAFLexerTokenMatcher(self::OPEN_PARENTHESIS, '/^\\(/'),
@@ -3780,7 +3551,7 @@ class wfWAFSQLiLexer implements wfWAFLexerInterface {
 	private $sql;
 
 	/**
-	 * @var wfWAFSQLiStringScanner
+	 * @var wfWAFStringScanner
 	 */
 	private $scanner;
 
@@ -3790,7 +3561,7 @@ class wfWAFSQLiLexer implements wfWAFLexerInterface {
 	 * @param int $flags
 	 */
 	public function __construct($sql = null, $flags = 0) {
-		$this->scanner = new wfWAFSQLiStringScanner();
+		$this->scanner = new wfWAFStringScanner();
 		$this->tokenMatchers = self::getLexerTokenMatchers();
 		$this->setSQL($sql);
 		$this->setFlags($flags);
@@ -3814,12 +3585,12 @@ class wfWAFSQLiLexer implements wfWAFLexerInterface {
 	 */
 	public function nextToken() {
 		if (!$this->scanner->eos()) {
-			$this->scanner->skip('/^\s+/s');
-			if ($this->scanner->eos()) {
-				return false;
-			}
 			/** @var wfWAFLexerTokenMatcher $tokenMatcher */
 			foreach ($this->tokenMatchers as $tokenMatcher) {
+				$this->scanner->skip('/^\s+/s');
+				if ($this->scanner->eos()) {
+					return false;
+				}
 
 				if (($this->flags & self::FLAG_TOKENIZE_MYSQL_PORTABLE_COMMENTS) === 0 &&
 					($tokenMatcher->getTokenID() === self::MYSQL_PORTABLE_COMMENT_START ||
@@ -3858,11 +3629,9 @@ class wfWAFSQLiLexer implements wfWAFLexerInterface {
 					return $token;
 				}
 			}
-			$byteOffset = $this->scanner->getPointer();
 			$char = $this->scanner->scanChar();
-			$e = new wfWAFSQLiLexerSyntaxError(sprintf('Invalid character "%s" (\x%02x) found on line %d, column %d',
+			$e = new wfWAFParserSyntaxError(sprintf('Invalid character "%s" (\x%02x) found on line %d, column %d',
 				$char, ord($char), $this->scanner->getLine(), $this->scanner->getColumn()));
-			$e->setByteOffset($byteOffset);
 			$e->setParseLine($this->scanner->getLine());
 			$e->setParseColumn($this->scanner->getColumn());
 			throw $e;
@@ -3894,7 +3663,6 @@ class wfWAFSQLiLexer implements wfWAFLexerInterface {
 	 * @param string $sql
 	 */
 	public function setSQL($sql) {
-		$this->hasPortableCommentStart = false;
 		if (is_string($sql)) {
 			$this->scanner->setString($sql);
 		}
@@ -3935,28 +3703,6 @@ class wfWAFSQLiLexer implements wfWAFLexerInterface {
 		}
 	}
 
-}
-
-/**
- * Syntax error raised when the SQL lexer cannot consume an input byte.
- */
-class wfWAFSQLiLexerSyntaxError extends wfWAFParserSyntaxError {
-	private $byteOffset;
-
-	/**
-	 * @param int $byteOffset Byte offset of the unrecognized character.
-	 * @return void
-	 */
-	public function setByteOffset($byteOffset) {
-		$this->byteOffset = $byteOffset;
-	}
-
-	/**
-	 * @return int Byte offset of the unrecognized character.
-	 */
-	public function getByteOffset() {
-		return $this->byteOffset;
-	}
 }
 
 class wfWAFLexerTokenMatcher {

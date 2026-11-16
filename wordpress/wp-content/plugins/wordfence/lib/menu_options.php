@@ -67,7 +67,6 @@ if (isset($_GET['source']) && wfPage::isValidPage($_GET['source'])) {
 						'wf-unified-global-options-dashboard',
 						'wf-unified-global-options-alert',
 						'wf-unified-global-options-email-summary',
-						'wf-unified-global-options-dashboard-security-news',
 						'wf-unified-waf-options-basic',
 						'wf-unified-waf-options-advanced',
 						'wf-unified-waf-options-bruteforce',
@@ -105,7 +104,6 @@ if (isset($_GET['source']) && wfPage::isValidPage($_GET['source'])) {
 					<div class="wordfence-vue-wrapper" data-base-component="OptionsGroupDashboard" data-prop-state-key="wf-unified-global-options-dashboard"></div>
 					<div class="wordfence-vue-wrapper" data-base-component="OptionsGroupAlert" data-prop-state-key="wf-unified-global-options-alert"></div>
 					<div class="wordfence-vue-wrapper" data-base-component="OptionsGroupEmailSummary" data-prop-state-key="wf-unified-global-options-email-summary"></div>
-					<div class="wordfence-vue-wrapper" data-base-component="OptionsGroupSecurityNews" data-prop-state-key="wf-unified-global-options-dashboard-security-news"></div>
 
 					<?php
 					echo wfView::create('common/section-subtitle', array(

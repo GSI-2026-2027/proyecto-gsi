@@ -9,14 +9,10 @@ document.addEventListener('DOMContentLoaded', function handler() {
 
     const consentIntegration = WP_Statistics_Tracker_Object.option.consentIntegration.name;
 
-    // If there's no consent integration
-    if (!consentIntegration) {
-        wpStatisticsStartTracking();
-    }
-
-    // If Borlabs Cookie integration is enabled
-    if (consentIntegration === 'borlabs_cookie') {
-        handleBorlabsCookieIntegration();
+    // If there's no consent integration, or borlabs cookie integration is enabled
+    if (!consentIntegration || consentIntegration === 'borlabs_cookie') {
+        WpStatisticsUserTracker.init();
+        WpStatisticsEventTracker.init();
     }
 
     // If WP Consent API integration is enabled
@@ -35,32 +31,20 @@ document.addEventListener('DOMContentLoaded', function handler() {
     }
 });
 
-function wpStatisticsStartTracking() {
-    WpStatisticsUserTracker.init();
-    WpStatisticsEventTracker.init();
-}
-
-function wpStatisticsStopTracking() {
-    WpStatisticsUserTracker.stop();
-    WpStatisticsEventTracker.stop();
-}
 
 function handleWpConsentApiIntegration() {
     if (wp_has_consent('statistics') || wp_has_consent('statistics-anonymous')) {
-        wpStatisticsStartTracking();
+        WpStatisticsUserTracker.init();
+        WpStatisticsEventTracker.init();
     }
 
     document.addEventListener("wp_listen_for_consent_change", function (e) {
         const changedConsentCategory = e.detail;
         for (let key in changedConsentCategory) {
             if (changedConsentCategory.hasOwnProperty(key)) {
-                if (key === 'statistics' || key === 'statistics-anonymous') {
-                    if (wp_has_consent('statistics') || wp_has_consent('statistics-anonymous')) {
-                        wpStatisticsStartTracking();
-                    } else {
-                        wpStatisticsStopTracking();
-                    }
-                    break;
+                if ((key === 'statistics' || key === 'statistics-anonymous') && changedConsentCategory[key] === 'allow') {
+                    WpStatisticsUserTracker.init();
+                    WpStatisticsEventTracker.init();
                 }
             }
         }
@@ -68,58 +52,36 @@ function handleWpConsentApiIntegration() {
 }
 
 function handleRealCookieBannerIntegration() {
-    const updateTracking = () => {
-        const baseConsent = window.consentApi?.consentSync("wp-statistics");
-        const dataProcessingConsent = window.consentApi?.consentSync("wp-statistics-with-data-processing");
-        // The base service counts as before even when the owner never added it in Real Cookie Banner.
-        // The data-processing service must exist, so a declined visitor is not counted when IPs are hashed.
-        const baseOptIn = !!(baseConsent && baseConsent.cookieOptIn);
-        const dataProcessingOptIn = !!(dataProcessingConsent && dataProcessingConsent.cookie != null && dataProcessingConsent.cookieOptIn);
-
-        if (baseOptIn || dataProcessingOptIn) {
-            wpStatisticsStartTracking();
-            return true;
-        }
-
-        wpStatisticsStopTracking();
-        return false;
-    };
-
     (window.consentApi?.consent("wp-statistics") || Promise.resolve())
-        .then(updateTracking)
+        .then(() => {
+            // In case the user has given consent
+            WpStatisticsUserTracker.init();
+            WpStatisticsEventTracker.init();
+        })
         .catch(() => {
-            if (!updateTracking()) {
+            // In case the user has not given base consent,
+            // check if they have given consent for data processing service
+            const dataProcessing = window.consentApi?.consentSync("wp-statistics-with-data-processing");
+
+            if (dataProcessing.cookie != null && dataProcessing.cookieOptIn) {
+                WpStatisticsUserTracker.init();
+                WpStatisticsEventTracker.init();
+            } else {
                 console.log("WP Statistics: Real Cookie Banner consent is not given to track visitor information.");
             }
         });
-
-    document.addEventListener('RCB/OptIn', updateTracking);
-    document.addEventListener('RCB/OptOut', updateTracking);
-}
-
-function handleBorlabsCookieIntegration() {
-    // Borlabs only releases this script after the WP Statistics service is accepted.
-    wpStatisticsStartTracking();
-
-    window.addEventListener('borlabs-cookie-consent-saved', function () {
-        const consents = window.BorlabsCookie && window.BorlabsCookie.Consents;
-
-        const consentStatus = (WP_Statistics_Tracker_Object.option.consentIntegration || {}).status || {};
-
-        // With Anonymous Tracking on, the site owner chose to keep counting visitors without consent.
-        if (consentStatus.anonymous_tracking === true || !consents || typeof consents.hasConsent !== 'function') {
-            return;
-        }
-
-        if (consents.hasConsent('wp-statistics')) {
-            wpStatisticsStartTracking();
-        } else {
-            wpStatisticsStopTracking();
-        }
-    });
 }
 
 function handleCookieYesIntegration() {
+    let started = false;
+
+    const startTracking = () => {
+        if (started) return;
+        started = true;
+        WpStatisticsUserTracker.init();
+        WpStatisticsEventTracker.init();
+    };
+
     const hasAnalyticsConsent = () => {
         if (typeof window.getCkyConsent === 'function') {
             const consent = window.getCkyConsent();
@@ -163,33 +125,25 @@ function handleCookieYesIntegration() {
     const legacyReloadsOnAccept = () => !!(window.CLI && window.CLI.settings && Boolean(window.CLI.settings.accept_close_reload) === true);
 
     if (hasAnalyticsConsent()) {
-        wpStatisticsStartTracking();
+        startTracking();
     }
 
     document.addEventListener('cookieyes_consent_update', function (e) {
         const accepted = (e.detail && e.detail.accepted) || [];
 
-        const rejected = (e.detail && e.detail.rejected) || [];
-
-        if (rejected.indexOf('analytics') !== -1) {
-            wpStatisticsStopTracking();
-        } else if (accepted.indexOf('analytics') !== -1 || hasAnalyticsConsent()) {
-            wpStatisticsStartTracking();
-        } else {
-            wpStatisticsStopTracking();
+        if (accepted.indexOf('analytics') !== -1 || hasAnalyticsConsent()) {
+            startTracking();
         }
     });
 
     // The legacy banner sends no event, so check again once the visitor clicks in it.
     document.addEventListener('click', function (e) {
-        if (!isLegacy || !e.target || typeof e.target.closest !== 'function') return;
+        if (started || !isLegacy || legacyReloadsOnAccept() || !e.target || typeof e.target.closest !== 'function') return;
 
         if (e.target.closest('#cookie-law-info-bar, #cliSettingsPopup, .cli-modal, .cli-bar-container')) {
             setTimeout(function () {
-                if (!hasAnalyticsConsent()) {
-                    wpStatisticsStopTracking();
-                } else if (!legacyReloadsOnAccept()) {
-                    wpStatisticsStartTracking();
+                if (hasAnalyticsConsent()) {
+                    startTracking();
                 }
             }, 300);
         }

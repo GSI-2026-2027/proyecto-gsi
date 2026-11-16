@@ -12,20 +12,7 @@ class wfWAFI18n {
 	 * @return string
 	 */
 	public static function __($text) {
-		try {
 		return self::getInstance()->getI18nEngine()->__($text);
-		}
-		catch (Exception $e) {
-			if (class_exists('wfWAFRuntimeHealth', false)) {
-				wfWAFRuntimeHealth::failure('translations', 'translation-failed', $e, false);
-			}
-		}
-		catch (Throwable $e) {
-			if (class_exists('wfWAFRuntimeHealth', false)) {
-				wfWAFRuntimeHealth::failure('translations', 'translation-failed', $e, false);
-			}
-		}
-		return $text;
 	}
 
 	public static function esc_html__($text) {

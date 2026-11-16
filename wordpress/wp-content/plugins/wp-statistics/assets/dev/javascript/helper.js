@@ -619,7 +619,7 @@ jQuery(document).ready(function () {
 
     document.querySelectorAll('.wp-has-submenu.menu-top.toplevel_page_wps_overview_page li a')
         .forEach(link => {
-            if (link.querySelector('.wps-text-warning, .wps-addons-menu')) {
+            if (link.querySelector('.wps-text-warning')) {
                 link.classList.add('addon-menu');
             }
         });

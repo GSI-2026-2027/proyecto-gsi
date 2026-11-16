@@ -14,11 +14,11 @@
 			FOOGALLERY_THUMBNAIL_TEMPLATE.setPreviewClasses();
 		});
 
-		$(document).on('change', 'input[name="foogallery_settings[thumbnail_border-style]"], input[name="foogallery_settings[thumbnail_hover-effect]"]', function() {
+		$('input[name="foogallery_settings[thumbnail_border-style]"], input[name="foogallery_settings[thumbnail_hover-effect]"]').change(function() {
 			FOOGALLERY_THUMBNAIL_TEMPLATE.setPreviewClasses();
 		});
 
-		$(document).on('click', '.foogallery-thumbnail-preview', function(e) {
+		$('.foogallery-thumbnail-preview').on('click', function(e) {
 			e.preventDefault();
 		});
 	};

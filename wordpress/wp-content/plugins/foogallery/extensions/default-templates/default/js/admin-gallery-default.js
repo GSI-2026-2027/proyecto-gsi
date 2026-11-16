@@ -62,18 +62,18 @@
 			FOOGALLERY_DEF_TEMPLATE.showHideCaptionContent();
 		});
 
-		$(document).on('change', 'input[name="foogallery_settings[default_border-style]"], ' +
+		$('input[name="foogallery_settings[default_border-style]"], ' +
 		  'input[name="foogallery_settings[default_hover-effect]"], ' +
 		  'input[name="foogallery_settings[default_hover-effect-type]"], ' +
-		  'input[name="foogallery_settings[default_caption-hover-effect]"]', function() {
+		  'input[name="foogallery_settings[default_caption-hover-effect]"]').change(function() {
 			FOOGALLERY_DEF_TEMPLATE.setPreviewClasses();
 		});
 
-		$(document).on('change', 'input[name="foogallery_settings[default_caption-content]"]', function() {
+		$('input[name="foogallery_settings[default_caption-content]"]').change(function() {
 			FOOGALLERY_DEF_TEMPLATE.showHideCaptionContent();
 		});
 
-		$(document).on('click', '.foogallery-thumbnail-preview', function(e) {
+		$('.foogallery-thumbnail-preview').on('click', function(e) {
 			e.preventDefault();
 		});
 

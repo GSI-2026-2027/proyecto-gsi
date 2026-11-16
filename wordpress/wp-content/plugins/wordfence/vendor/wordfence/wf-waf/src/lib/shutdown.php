@@ -11,7 +11,7 @@ class wfShutdownFunction {
 	}
 
 	public function invoke() {
-		return call_user_func($this->callable);
+		call_user_func($this->callable);
 	}
 
 	public function getPriority() {
@@ -38,24 +38,7 @@ class wfShutdownRegistry {
 			return $a->getPriority() - $b->getPriority();
 		});
 		foreach ($this->functions as $function) {
-			try {
-				if ($function->invoke() === false && class_exists('wfWAFRuntimeHealth', false)) {
-					wfWAFRuntimeHealth::reportMaintenanceFailure('shutdown');
-				}
-			}
-			catch (Exception $e) {
-				if (class_exists('wfWAFRuntimeHealth', false)) {
-					wfWAFRuntimeHealth::reportMaintenanceFailure('shutdown');
-				}
-			}
-			catch (Throwable $e) {
-				if (class_exists('wfWAFRuntimeHealth', false)) {
-					wfWAFRuntimeHealth::reportMaintenanceFailure('shutdown');
-				}
-			}
-		}
-		if (class_exists('wfWAFRuntimeHealth', false)) {
-			wfWAFRuntimeHealth::flush();
+			$function->invoke();
 		}
 	}
 
